@@ -66,7 +66,7 @@ header { padding: 15px 20px; display: flex; align-items: center; justify-content
     </div>
 
     <div id="stepVerify" style="display: none;">
-      <p class="unlock-desc">Verifying your token...</p>
+      <p class="unlock-desc">Verifying your session...</p>
       <div class="loader" style="display: inline-block; border-top-color: var(--primary);"></div>
     </div>
 
@@ -91,7 +91,7 @@ header { padding: 15px 20px; display: flex; align-items: center; justify-content
   const db = getFirestore(app);
 
   let currentUser = null;
-  let GPLINKS_API_KEY = "";
+  let GPLINKS_STATIC_URL = "";
 
   const statusBox = document.getElementById('statusBox');
   const generateBtn = document.getElementById('generateBtn');
@@ -103,7 +103,7 @@ header { padding: 15px 20px; display: flex; align-items: center; justify-content
       statusBox.innerText = msg;
   }
 
-  // 1. Authenticate & Fetch GPLinks API Key securely
+  // 1. Fetch the Static URL saved from Admin Panel
   onAuthStateChanged(auth, async (user) => {
       if (!user) {
           window.location.href = "profile.html";
@@ -114,9 +114,10 @@ header { padding: 15px 20px; display: flex; align-items: center; justify-content
       try {
           const apiSnap = await getDoc(doc(db, "settings", "api_keys"));
           if(apiSnap.exists() && apiSnap.data().gplinks) {
-              GPLINKS_API_KEY = apiSnap.data().gplinks;
+              // Ab yahan "API Key" ki jagah hum URL fetch kar rahe hain
+              GPLINKS_STATIC_URL = apiSnap.data().gplinks;
           } else {
-              showStatus("System Error: API Key not configured by Admin.", "error");
+              showStatus("System Error: Setup not complete. Ask Admin to add URL.", "error");
               generateBtn.disabled = true;
           }
       } catch(e) {
@@ -126,59 +127,39 @@ header { padding: 15px 20px; display: flex; align-items: center; justify-content
       checkVerificationReturn();
   });
 
-  // 2. Generation Logic with CORS Proxy Fix
+  // 2. Start Process (Flag in DB -> Redirect to Static GPLink)
   window.startUnlockProcess = async () => {
-      if(!currentUser || !GPLINKS_API_KEY) {
-          showStatus("System Error: Missing User or API Key.", "error");
+      if(!currentUser || !GPLINKS_STATIC_URL) {
+          showStatus("System Error: URL not configured.", "error");
           return;
       }
       
       generateBtn.disabled = true;
       genLoader.style.display = "block";
-      showStatus("Generating secure link... Please wait.", "loading");
+      showStatus("Redirecting to verification page...", "loading");
 
       try {
-          // Generate a highly secure random token
-          const secretToken = "tok_" + Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
-          
-          // Save token to user's database document
+          // Save a flag in user's database that they officially started the process
           const userRef = doc(db, "users", currentUser.uid);
-          await updateDoc(userRef, { pendingToken: secretToken });
+          await updateDoc(userRef, { pendingToken: "active" });
 
-          // Create the callback URL
-          const currentUrl = window.location.origin + window.location.pathname;
-          const targetUrl = `${currentUrl}?verify=${secretToken}`;
-
-          // Using a CORS Proxy (AllOrigins) to bypass browser blocks
-          const apiUrl = `https://gplinks.in/api?api=${GPLINKS_API_KEY}&url=${encodeURIComponent(targetUrl)}&format=json`;
-          const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(apiUrl)}`;
+          // Redirect to the manually created GPLink
+          window.location.href = GPLINKS_STATIC_URL;
           
-          const response = await fetch(proxyUrl);
-          const proxyData = await response.json();
-          
-          // Parse the actual content returned by GPLinks
-          const data = JSON.parse(proxyData.contents);
-
-          if(data.status === "success" || data.shortenedUrl) {
-              showStatus("Redirecting to verification page...", "loading");
-              window.location.href = data.shortenedUrl;
-          } else {
-              throw new Error(data.message || "GPLinks API rejected the request.");
-          }
       } catch (err) {
-          console.error(err);
-          showStatus("Error generating link. Please check API Key or Internet.", "error");
+          showStatus("Error starting process. Try again.", "error");
           generateBtn.disabled = false;
           genLoader.style.display = "none";
       }
   };
 
-  // 3. Return Verification Logic (Zero-Bypass)
+  // 3. Return Verification (Check if user came back with success)
   async function checkVerificationReturn() {
       const urlParams = new URLSearchParams(window.location.search);
-      const returnedToken = urlParams.get('verify');
+      const isVerified = urlParams.get('verify');
       
-      if(returnedToken) {
+      // Agar user link solve karke return hua hai
+      if(isVerified === "success") {
           document.getElementById('stepGenerate').style.display = "none";
           document.getElementById('stepVerify').style.display = "block";
           
@@ -189,24 +170,27 @@ header { padding: 15px 20px; display: flex; align-items: center; justify-content
               if(userSnap.exists()) {
                   const userData = userSnap.data();
                   
-                  if(userData.pendingToken === returnedToken) {
-                      // Match Found! Grant 24 Hour Access (86400000 ms) and delete token
+                  // Check karega ki kya sach mein button daba ke gaya tha
+                  if(userData.pendingToken === "active") {
+                      // Grant 24 Hour Access (86400000 ms) and remove the flag
                       const newExpiryTime = Date.now() + 86400000;
                       
                       await updateDoc(userRef, {
                           accessExpiresAt: newExpiryTime,
-                          pendingToken: deleteField() 
+                          pendingToken: deleteField() // Remove flag to prevent bypass
                       });
                       
                       document.getElementById('stepVerify').style.display = "none";
                       document.getElementById('mainIcon').innerText = "🎉";
                       showStatus("Premium Pass Unlocked Successfully!", "success");
                       
+                      // Wapas home bhej dega 2 second baad
                       setTimeout(() => { window.location.href = "index.html"; }, 2000);
                   } else {
+                      // Agar user ne bina button dabaye direct URL khola
                       document.getElementById('stepVerify').style.display = "none";
                       document.getElementById('stepGenerate').style.display = "block";
-                      showStatus("Verification failed. The link is invalid or already used.", "error");
+                      showStatus("Verification failed. Please click 'Get Unlock Link' first.", "error");
                   }
               }
           } catch(err) {
