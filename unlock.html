@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Unlock Premium Pass | Comic Pur</title>
+
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-PYHWPM2BM4"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-PYHWPM2BM4');
+</script>
+
+<style>
+:root { --primary: #00d4ff; --dark: #070b19; --card-bg: #111827; --success: #10b981; --danger: #ef4444; }
+* { margin:0; padding:0; box-sizing:border-box; font-family: 'Segoe UI', system-ui, sans-serif; }
+body { background-color: var(--dark); color: white; min-height: 100vh; display: flex; flex-direction: column; }
+
+/* HEADER */
+header { padding: 15px 20px; display: flex; align-items: center; justify-content: space-between; background: rgba(7, 11, 25, 0.95); border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+.brand-text { font-size: 20px; font-weight: 900; color: white; text-decoration: none; letter-spacing: 1px;}
+.brand-text span { color: var(--primary); }
+.back-btn { background: transparent; color: var(--primary); border: 1px solid var(--primary); padding: 6px 15px; border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer; text-decoration: none; }
+
+/* UNLOCK CARD */
+.main-content { flex-grow: 1; display: flex; justify-content: center; align-items: center; padding: 20px; }
+.unlock-card { background: var(--card-bg); border: 1px solid rgba(0, 212, 255, 0.2); box-shadow: 0 10px 30px rgba(0,0,0,0.5); padding: 40px 30px; border-radius: 16px; width: 100%; max-width: 450px; text-align: center; }
+.unlock-icon { font-size: 60px; margin-bottom: 15px; text-shadow: 0 0 20px rgba(0,212,255,0.4); }
+.unlock-title { font-size: 24px; font-weight: 900; margin-bottom: 15px; color: white; }
+.unlock-title span { color: var(--primary); }
+.unlock-desc { font-size: 14px; color: #aaa; margin-bottom: 30px; line-height: 1.6; }
+
+.action-btn { width: 100%; padding: 16px; border: none; border-radius: 8px; background: var(--primary); color: #000; font-weight: 900; font-size: 16px; cursor: pointer; transition: 0.3s; text-transform: uppercase; display: flex; justify-content: center; align-items: center; gap: 10px;}
+.action-btn:hover { background: #00b8e6; transform: translateY(-2px); box-shadow: 0 0 20px rgba(0,212,255,0.5); }
+.action-btn:disabled { background: #333; color: #888; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.status-msg { margin-top: 20px; padding: 15px; border-radius: 8px; font-weight: bold; font-size: 14px; display: none; }
+.status-success { background: rgba(16, 185, 129, 0.1); color: var(--success); border: 1px solid var(--success); }
+.status-error { background: rgba(239, 68, 68, 0.1); color: var(--danger); border: 1px solid var(--danger); }
+.status-loading { color: var(--primary); }
+
+.loader { border: 3px solid rgba(0,0,0,0.1); border-top: 3px solid #000; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: none; }
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <a href="index.html" class="brand-text">COMIC <span>PUR</span></a>
+  <a href="index.html" class="back-btn">← Home</a>
+</header>
+
+<div class="main-content">
+  <div class="unlock-card">
+    <div class="unlock-icon" id="mainIcon">⚡</div>
+    <div class="unlock-title">24-HOUR <span>PREMIUM PASS</span></div>
+    
+    <div id="stepGenerate">
+      <p class="unlock-desc">Complete a quick verification step (Ads) to unlock the entire comic library for the next 24 hours. No hidden fees!</p>
+      <button class="action-btn" id="generateBtn" onclick="startUnlockProcess()">
+        <span>Get Unlock Link</span>
+        <div class="loader" id="genLoader"></div>
+      </button>
+    </div>
+
+    <div id="stepVerify" style="display: none;">
+      <p class="unlock-desc">Verifying your token...</p>
+      <div class="loader" style="display: inline-block; border-top-color: var(--primary);"></div>
+    </div>
+
+    <div id="statusBox" class="status-msg"></div>
+  </div>
+</div>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+  import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+  import { getFirestore, doc, getDoc, updateDoc, deleteField } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+      apiKey: "AIzaSyAct9qGdPor_WyQ5k9Gad6HYRi_5Z_Tb_A",
+      authDomain: "comicpur-e6725.firebaseapp.com",
+      projectId: "comicpur-e6725",
+      appId: "1:976881280643:web:0e629c3331feae72f49db6"
+  };
+  
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  let currentUser = null;
+  let GPLINKS_API_KEY = "";
+
+  const statusBox = document.getElementById('statusBox');
+  const generateBtn = document.getElementById('generateBtn');
+  const genLoader = document.getElementById('genLoader');
+
+  function showStatus(msg, type) {
+      statusBox.style.display = "block";
+      statusBox.className = `status-msg status-${type}`;
+      statusBox.innerText = msg;
+  }
+
+  // 1. Authenticate & Fetch GPLinks API Key securely
+  onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+          window.location.href = "profile.html";
+          return;
+      }
+      currentUser = user;
+      
+      try {
+          const apiSnap = await getDoc(doc(db, "settings", "api_keys"));
+          if(apiSnap.exists() && apiSnap.data().gplinks) {
+              GPLINKS_API_KEY = apiSnap.data().gplinks;
+          } else {
+              showStatus("System Error: API Key not configured by Admin.", "error");
+              generateBtn.disabled = true;
+          }
+      } catch(e) {
+          showStatus("Database connection error.", "error");
+      }
+
+      checkVerificationReturn();
+  });
+
+  // 2. Generation Logic (Create Token -> Save to DB -> Shorten URL)
+  window.startUnlockProcess = async () => {
+      if(!currentUser || !GPLINKS_API_KEY) return;
+      
+      generateBtn.disabled = true;
+      genLoader.style.display = "block";
+      showStatus("Generating secure link...", "loading");
+
+      try {
+          // Generate a highly secure random token
+          const secretToken = "tok_" + Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+          
+          // Save token to user's database document
+          const userRef = doc(db, "users", currentUser.uid);
+          await updateDoc(userRef, { pendingToken: secretToken });
+
+          // Create the callback URL
+          const currentUrl = window.location.origin + window.location.pathname;
+          const targetUrl = `${currentUrl}?verify=${secretToken}`;
+
+          // Ask GPLinks to shorten this URL
+          const apiUrl = `https://gplinks.in/api?api=${GPLINKS_API_KEY}&url=${encodeURIComponent(targetUrl)}`;
+          
+          const response = await fetch(apiUrl);
+          const data = await response.json();
+
+          if(data.status === "success") {
+              showStatus("Redirecting to verification page...", "loading");
+              window.location.href = data.shortenedUrl;
+          } else {
+              throw new Error("GPLinks API rejected the request.");
+          }
+      } catch (err) {
+          showStatus("Error generating link. Please try again later.", "error");
+          generateBtn.disabled = false;
+          genLoader.style.display = "none";
+      }
+  };
+
+  // 3. Return Verification Logic (The Zero-Bypass Masterstroke)
+  async function checkVerificationReturn() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const returnedToken = urlParams.get('verify');
+      
+      if(returnedToken) {
+          document.getElementById('stepGenerate').style.display = "none";
+          document.getElementById('stepVerify').style.display = "block";
+          
+          try {
+              const userRef = doc(db, "users", currentUser.uid);
+              const userSnap = await getDoc(userRef);
+              
+              if(userSnap.exists()) {
+                  const userData = userSnap.data();
+                  
+                  // Verification Check
+                  if(userData.pendingToken === returnedToken) {
+                      // Match Found! Grant 24 Hour Access (86400000 ms) and delete token
+                      const newExpiryTime = Date.now() + 86400000;
+                      
+                      await updateDoc(userRef, {
+                          accessExpiresAt: newExpiryTime,
+                          pendingToken: deleteField() // Destroy token so it can't be reused
+                      });
+                      
+                      document.getElementById('stepVerify').style.display = "none";
+                      document.getElementById('mainIcon').innerText = "🎉";
+                      showStatus("Premium Pass Unlocked Successfully!", "success");
+                      
+                      // Auto redirect to homepage after 2 seconds
+                      setTimeout(() => { window.location.href = "index.html"; }, 2000);
+                  } else {
+                      // Fake or Expired Token
+                      document.getElementById('stepVerify').style.display = "none";
+                      document.getElementById('stepGenerate').style.display = "block";
+                      showStatus("Verification failed. The link is invalid or already used.", "error");
+                  }
+              }
+          } catch(err) {
+              document.getElementById('stepVerify').style.display = "none";
+              document.getElementById('stepGenerate').style.display = "block";
+              showStatus("Database error during verification.", "error");
+          }
+      }
+  }
+</script>
+</body>
+</html>
