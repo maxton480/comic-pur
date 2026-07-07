@@ -37,6 +37,7 @@
   .btn-success { background: var(--success); color: white; }
   .btn-success:hover { box-shadow: 0 0 15px rgba(16,185,129,0.5); }
   .btn-secondary { background: #333; color: white; margin-top: 10px; }
+  .btn-warning { background: var(--warning); color: #000; margin-top: 10px; }
 
   .status-box { margin-top: 15px; padding: 12px; background: rgba(0, 0, 0, 0.4); border-radius: 6px; font-size: 13px; color: var(--primary); border-left: 3px solid var(--primary); display: none; word-wrap: break-word;}
 
@@ -87,6 +88,7 @@
           <label>GitHub Personal Access Token (for auto-sync)</label>
           <input type="password" id="githubTokenField" class="form-control" placeholder="ghp_xxxxxxxxxxxxxxxxx">
           <button class="btn btn-primary" id="saveGhTokenBtn" style="margin-top: 12px;">Save GitHub Token</button>
+          <button class="btn btn-warning" id="testGhConnectionBtn">📡 Test GitHub Connection</button>
         </div>
 
         <div class="form-group" style="flex: 1; min-width: 300px;">
@@ -228,6 +230,36 @@
       } else { alert("Please enter a valid GitHub token."); }
   });
 
+  // TEST GITHUB CONNECTION (NEW FEATURE)
+  document.getElementById('testGhConnectionBtn').addEventListener('click', async () => {
+      const statusBox = document.getElementById('globalSyncStatus');
+      if(!GITHUB_TOKEN) {
+          alert("Pehle GitHub token box mein daal kar 'Save GitHub Token' dabao."); return;
+      }
+      
+      statusBox.style.display = "block"; 
+      statusBox.style.borderLeftColor = "var(--primary)";
+      statusBox.innerText = "Testing connection to GitHub...";
+      
+      try {
+          const testUrl = `https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}?ref=${GITHUB_BRANCH}`;
+          const res = await fetch(testUrl, { headers: { "Authorization": `Bearer ${GITHUB_TOKEN}` } });
+          
+          if(res.ok) {
+              const data = await res.json();
+              statusBox.style.borderLeftColor = "var(--success)";
+              statusBox.innerText = `Success! Connected to Repo: ${data.name}. Token is working perfectly.`;
+          } else {
+              if(res.status === 404) throw new Error(`Repo not found. Check if GITHUB_USER and GITHUB_REPO are correct in code.`);
+              if(res.status === 401) throw new Error(`Unauthorized. Your Token is expired or invalid.`);
+              throw new Error(`API Error: ${res.statusText}`);
+          }
+      } catch (e) {
+          statusBox.style.borderLeftColor = "var(--danger)";
+          statusBox.innerText = "Connection Failed: " + e.message;
+      }
+  });
+
   async function loadSettings() {
       try {
           const snap = await getDoc(doc(db, "settings", "api_keys"));
@@ -327,7 +359,7 @@
       }
   };
 
-  // ADVANCED GITHUB SYNC WITH DEBUG LOGGING
+  // ADVANCED GITHUB SYNC (Fixed Auth Header & Added Deep Logs)
   window.syncWithGithubRepo = async (comicId) => {
       const statusBox = document.getElementById('globalSyncStatus');
       const comic = allComicsData.find(c => c.id === comicId);
@@ -341,21 +373,19 @@
 
       const folderName = comic.githubFolder || comic.title.toLowerCase().trim().replace(/\s+/g, '-');
       statusBox.style.display = "block"; statusBox.style.borderLeftColor = "var(--primary)";
-      statusBox.innerHTML = `Connecting to GitHub [Branch: <b>${GITHUB_BRANCH}</b>] for folder: <b>comics/${folderName}</b>...`;
+      statusBox.innerHTML = `Connecting to GitHub [Branch: <b>${GITHUB_BRANCH}</b>]...`;
       window.scrollTo({top: 0, behavior: 'smooth'});
 
       try {
-          // Explicitly appended ?ref= to avoid branch mismatch errors
+          // Change `token` to `Bearer` (Fixes issues with fine-grained tokens)
           const repoUrl = `https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/contents/comics/${encodeURIComponent(folderName)}?ref=${GITHUB_BRANCH}`;
-          const response = await fetch(repoUrl, { headers: { "Authorization": `token ${GITHUB_TOKEN}` } });
+          const response = await fetch(repoUrl, { headers: { "Authorization": `Bearer ${GITHUB_TOKEN}` } });
           
           if(!response.ok) {
               if(response.status === 404) {
-                  throw new Error(`Folder NOT FOUND (Error 404). Check if 'comics/${folderName}' exists exactly on GitHub branch '${GITHUB_BRANCH}'.`);
+                  throw new Error(`404 NOT FOUND: Yeh folder nahi mila -> comics/${folderName}. Ensure folder exists and is not empty.`);
               } else if(response.status === 401) {
-                  throw new Error(`UNAUTHORIZED (Error 401). Your GitHub Token is invalid, expired, or missing 'repo' permissions.`);
-              } else if(response.status === 403) {
-                  throw new Error(`FORBIDDEN (Error 403). GitHub rate limit exceeded or token lacks access.`);
+                  throw new Error(`401 UNAUTHORIZED: Token expire ho gaya hai ya permissions (repo scope) missing hai.`);
               } else {
                   throw new Error(`API Error ${response.status}: ${response.statusText}`);
               }
@@ -365,18 +395,18 @@
           let ghChapters = items.filter(item => item.type === "dir");
           if(ghChapters.length === 0) {
               statusBox.style.borderLeftColor = "var(--warning)";
-              statusBox.innerText = `Connected successfully! But no chapter folders found inside 'comics/${folderName}'.`; return;
+              statusBox.innerText = `Connected! Lekin 'comics/${folderName}' ke andar koi Chapter folder (jaise Ch1) nahi mila.`; return;
           }
 
           ghChapters.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true, sensitivity: 'base'}));
           let existingEps = comic.episodes || [];
           let newEpisodesAdded = 0;
-          statusBox.innerText = `Found ${ghChapters.length} chapters on GitHub. Syncing images...`;
+          statusBox.innerText = `Found ${ghChapters.length} chapters. Syncing images...`;
 
           for (let ghCh of ghChapters) {
               const alreadyExists = existingEps.some(ep => ep.title.toLowerCase().trim() === ghCh.name.toLowerCase().trim());
               if(!alreadyExists) {
-                  const chContentRes = await fetch(ghCh.url, { headers: { "Authorization": `token ${GITHUB_TOKEN}` } });
+                  const chContentRes = await fetch(ghCh.url, { headers: { "Authorization": `Bearer ${GITHUB_TOKEN}` } });
                   if(chContentRes.ok) {
                       const files = await chContentRes.json();
                       let imageFiles = files.filter(f => f.type === "file" && /\.(jpg|jpeg|png|webp)$/i.test(f.name));
