@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Profile — Comicpur</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Hind:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="app"></main>
+
+<script type="module">
+import {
+  watchUser, login, logout, checkAdmin,
+  localHistory,
+  db, collection, getDocs, query, orderBy, doc, deleteDoc,
+} from "./firebase.js";
+import { mountChrome, esc, timeAgo, coverImg } from "./nav.js";
+
+const initTab = new URLSearchParams(location.search).get("tab") === "history" ? "history" : "library";
+mountChrome(initTab === "history" ? "history" : "library");
+
+const app  = document.getElementById("app");
+const STAT = ["Reading", "Plan to read", "On hold", "Completed"];
+let user = null, admin = false, tab = initTab, libItems = null, libStatus = "All";
+
+watchUser(async (u) => {
+  user     = u;
+  admin    = await checkAdmin(u);
+  libItems = null; // reset cache on user change
+  render();
+});
+
+function render() {
+  const userCard = user
+    ? `<div class="me">
+         ${user.photoURL
+           ? `<img class="av" src="${esc(user.photoURL)}" alt="">`
+           : `<span class="av">${esc((user.displayName || "U")[0].toUpperCase())}</span>`}
+         <div class="grow">
+           <b>${esc(user.displayName || "Reader")}</b>
+           <small>${esc(user.email)}</small>
+         </div>
+         <button class="btn" id="outBtn">Logout</button>
+       </div>
+       ${admin ? `<div class="pad" style="margin-bottom:12px"><a class="btn" href="admin.html">Admin panel</a></div>` : ""}`
+    : `<div class="me">
+         <span class="av">?</span>
+         <div class="grow">
+           <b>Login karo</b>
+           <small>Library aur history save hogi</small>
+         </div>
+         <button class="btn solid" id="inBtn">Login</button>
+       </div>`;
+
+  app.innerHTML = userCard + `
+    <div class="chips">
+      <button class="chip ${tab === "library" ? "on" : ""}" data-tab="library">Library</button>
+      <button class="chip ${tab === "history" ? "on" : ""}" data-tab="history">History</button>
+    </div>
+    <div id="tabBody"></div>`;
+
+  document.getElementById("outBtn")?.addEventListener("click", logout);
+  document.getElementById("inBtn")?.addEventListener("click", () =>
+    login().catch((e) => alert(e.message))
+  );
+  app.querySelectorAll("[data-tab]").forEach((btn) => {
+    btn.onclick = () => {
+      tab = btn.dataset.tab;
+      history.replaceState(null, "", "?tab=" + tab);
+      render();
+    };
+  });
+
+  tab === "library" ? showLibrary() : showHistory();
+}
+
+// ── Library ───────────────────────────────────────────────
+async function showLibrary() {
+  const body = document.getElementById("tabBody");
+  if (!user) {
+    body.innerHTML = `<p class="empty">Library dekhne ke liye login karo.</p>`;
+    return;
+  }
+  if (!libItems) {
+    body.innerHTML = `<p class="empty">Load ho raha hai...</p>`;
+    const snap = await getDocs(collection(db, "users", user.uid, "library")).catch(() => ({ docs: [] }));
+    libItems = snap.docs.map((d) => d.data());
+  }
+
+  const shown = libStatus === "All"
+    ? libItems
+    : libItems.filter((x) => x.status === libStatus);
+
+  const chip = (s) => {
+    const count = s === "All" ? libItems.length : libItems.filter((x) => x.status === s).length;
+    return `<button class="chip ${libStatus === s ? "on" : ""}" data-s="${esc(s)}">${esc(s)} ${count}</button>`;
+  };
+
+  body.innerHTML = `
+    <div class="chips">${["All", ...STAT].map(chip).join("")}</div>
+    ${shown.length
+      ? `<div class="grid">${shown.map((c) => `
+          <a class="rcard" href="comic.html?id=${encodeURIComponent(c.id)}">
+            <div class="cover">
+              ${coverImg(c, 260)}
+              ${c.type ? `<span class="tag">${esc(c.type)}</span>` : ""}
+              <div class="shade"><b>${esc(c.title)}</b></div>
+            </div>
+            <p class="sub">${esc(c.status)}</p>
+          </a>`).join("")}</div>`
+      : `<p class="empty">Yahan abhi kuch nahi. Comic page pe library mein add karo.</p>`}`;
+
+  body.querySelectorAll("[data-s]").forEach((btn) => {
+    btn.onclick = () => { libStatus = btn.dataset.s; showLibrary(); };
+  });
+}
+
+// ── History ───────────────────────────────────────────────
+async function showHistory() {
+  const body = document.getElementById("tabBody");
+  let items;
+
+  if (user) {
+    body.innerHTML = `<p class="empty">Load ho raha hai...</p>`;
+    const snap = await getDocs(
+      query(collection(db, "users", user.uid, "history"), orderBy("ts", "desc"))
+    ).catch(() => ({ docs: [] }));
+    items = snap.docs.map((d) => d.data());
+  } else {
+    items = localHistory();
+  }
+
+  if (!items.length) {
+    body.innerHTML = `<p class="empty">Abhi kuch nahi padha.</p>`;
+    return;
+  }
+
+  body.innerHTML = `
+    <div class="pad" style="text-align:right;margin-bottom:12px">
+      <button class="btn" id="clrBtn">History saaf karo</button>
+    </div>
+    <div class="list pad">
+      ${items.map((h) => `
+        <a class="row" href="reading.html?id=${encodeURIComponent(h.id)}&ch=${encodeURIComponent(h.ch)}">
+          <div class="cover">${coverImg(h, 160)}</div>
+          <div>
+            <h3>${esc(h.title)}</h3>
+            <p class="when">Ch. ${esc(h.ch)} · ${timeAgo(h.ts)}</p>
+          </div>
+        </a>`).join("")}
+    </div>`;
+
+  document.getElementById("clrBtn").onclick = async () => {
+    if (!confirm("Poori history delete karni hai?")) return;
+    try { localStorage.removeItem("cp_history"); } catch {}
+    if (user) {
+      await Promise.all(
+        items.map((h) => deleteDoc(doc(db, "users", user.uid, "history", h.id)).catch(() => {}))
+      );
+    }
+    showHistory();
+  };
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Search — Comicpur</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Hind:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <div class="sec">
+    <input class="input" id="q" type="search" placeholder="Title, author, genre..." autocomplete="off" style="display:block;margin-bottom:10px">
+    <div class="filters">
+      <select class="input" id="type" aria-label="Type"><option value="">Saare types</option></select>
+      <select class="input" id="sort" aria-label="Sort">
+        <option value="upd">Abhi update hui</option>
+        <option value="new">Nayi add hui</option>
+        <option value="az">A se Z</option>
+      </select>
+    </div>
+    <p class="sub" id="count" style="margin-bottom:14px"></p>
+    <div class="list" id="res"></div>
+  </div>
+</main>
+
+<script type="module">
+import { getComics } from "./firebase.js";
+import { mountChrome, esc, rowHTML } from "./nav.js";
+
+mountChrome("search");
+
+const $ = (id) => document.getElementById(id);
+let all = [];
+
+// Pre-fill from URL param
+$("q").value = new URLSearchParams(location.search).get("q") || "";
+
+function draw() {
+  const q = $("q").value.trim().toLowerCase();
+  const t = $("type").value;
+  const s = $("sort").value;
+
+  let results = all.filter((c) =>
+    (!t || c.type === t) &&
+    (!q || [c.title, c.author, ...(c.genres || [])].join(" ").toLowerCase().includes(q))
+  );
+
+  if (s === "az")  results.sort((a, b) => a.title.localeCompare(b.title));
+  if (s === "new") results.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  // "upd" is already sorted from Firestore
+
+  $("count").textContent = results.length + " comics";
+  $("res").innerHTML = results.length
+    ? results.map(rowHTML).join("")
+    : `<p class="empty">Kuch nahi mila. Dusra naam try karo.</p>`;
+}
+
+getComics()
+  .then((comics) => {
+    all = comics;
+    // Populate type filter
+    [...new Set(comics.map((c) => c.type).filter(Boolean))].forEach((t) => {
+      $("type").insertAdjacentHTML("beforeend", `<option>${esc(t)}</option>`);
+    });
+    draw();
+  })
+  .catch((e) => {
+    $("res").innerHTML = `<p class="empty">Load nahi hua: ${esc(e.message)}</p>`;
+  });
+
+["q", "type", "sort"].forEach((k) => $(k).addEventListener("input", draw));
+</script>
+</body>
+</html>

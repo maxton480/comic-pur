@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Comicpur</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Hind:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="app"><p class="empty">Load ho raha hai...</p></main>
+
+<script type="module">
+import {
+  getComic, sortedChapters, localHistory,
+  watchUser, login,
+  db, doc, getDoc, setDoc, deleteDoc,
+} from "./firebase.js";
+import { mountChrome, esc, timeAgo, coverImg } from "./nav.js";
+
+mountChrome("");
+
+const app = document.getElementById("app");
+const id  = new URLSearchParams(location.search).get("id");
+
+const STAT = ["Reading", "Plan to read", "On hold", "Completed"];
+let user = null, comic = null, chs = [], newestFirst = true, q = "";
+
+// ── Draw chapter list ─────────────────────────────────────
+function drawChapters() {
+  const filtered = (newestFirst ? [...chs].reverse() : chs)
+    .filter((c) => !q || `ch ${c.n} ${c.title || ""}`.toLowerCase().includes(q));
+
+  document.getElementById("chs").innerHTML = filtered.length
+    ? filtered.map((c) => `
+        <a href="reading.html?id=${encodeURIComponent(id)}&ch=${encodeURIComponent(c.n)}">
+          <b>Ch. ${esc(c.n)}${c.title ? " — " + esc(c.title) : ""}</b>
+          <small>${c.pages} pages${c.at ? " · " + timeAgo(c.at) : ""}</small>
+        </a>`).join("")
+    : `<p class="empty" style="padding:24px">Koi chapter nahi mila.</p>`;
+}
+
+// ── Draw page ─────────────────────────────────────────────
+function draw() {
+  const hist    = localHistory().find((x) => x.id === id);
+  const startCh = hist && chs.find((c) => c.n === hist.ch) ? hist.ch : chs[0]?.n;
+  document.title = comic.title + " — Comicpur";
+
+  app.innerHTML = `
+    <section class="hero">
+      <div class="cover">${coverImg(comic, 360)}</div>
+      <div>
+        <div class="tags">
+          ${comic.type   ? `<span class="tag solid">${esc(comic.type)}</span>` : ""}
+          ${comic.status ? `<span class="tag">${esc(comic.status)}</span>`      : ""}
+        </div>
+        <h1>${esc(comic.title)}</h1>
+        <p class="sub">${chs.length} chapters${comic.author ? " · " + esc(comic.author) : ""}</p>
+      </div>
+    </section>
+
+    <div class="actions">
+      ${startCh
+        ? `<a class="btn solid grow" href="reading.html?id=${encodeURIComponent(id)}&ch=${encodeURIComponent(startCh)}">
+             ${hist ? "Padhna jaari rakho" : "Padhna shuru karo"} · Ch. ${esc(startCh)}
+           </a>`
+        : `<span class="btn grow muted">Chapters jaldi aayenge</span>`}
+    </div>
+
+    <div class="actions" style="margin-top:8px">
+      <select class="input grow" id="libSel" aria-label="Library mein add karo">
+        <option value="">Library mein add karo</option>
+        ${STAT.map((s) => `<option>${esc(s)}</option>`).join("")}
+      </select>
+    </div>
+
+    ${comic.description ? `
+      <p class="desc clamp" id="desc">${esc(comic.description)}</p>
+      <button class="link" id="moreBtn">Aur padho ↓</button>` : ""}
+
+    ${(comic.genres || []).length ? `
+      <div class="tags pad" style="margin-top:10px;margin-bottom:4px">
+        ${comic.genres.map((g) => `<span class="tag">${esc(g)}</span>`).join("")}
+      </div>` : ""}
+
+    <h2 class="h">Chapters (${chs.length})</h2>
+    <div class="tools">
+      <input class="input" id="chSearch" placeholder="Chapter dhundo..." type="search">
+      <button class="btn" id="sortBtn">Newest</button>
+    </div>
+    <div class="chlist" id="chs"></div>`;
+
+  drawChapters();
+
+  // "Read more" toggle
+  document.getElementById("moreBtn")?.addEventListener("click", (e) => {
+    const d = document.getElementById("desc");
+    const expanded = d.classList.toggle("clamp") === false;
+    e.target.textContent = expanded ? "Kam dikhao ↑" : "Aur padho ↓";
+  });
+
+  // Chapter search
+  document.getElementById("chSearch").oninput = (e) => {
+    q = e.target.value.trim().toLowerCase();
+    drawChapters();
+  };
+
+  // Sort toggle
+  document.getElementById("sortBtn").onclick = (e) => {
+    newestFirst = !newestFirst;
+    e.target.textContent = newestFirst ? "Newest" : "Oldest";
+    drawChapters();
+  };
+
+  // Library select
+  const libSel = document.getElementById("libSel");
+  libSel.onchange = async () => {
+    if (!user) {
+      libSel.value = "";
+      await login().catch(() => {});
+      return;
+    }
+    const ref = doc(db, "users", user.uid, "library", id);
+    if (!libSel.value) {
+      await deleteDoc(ref).catch(() => {});
+    } else {
+      await setDoc(ref, {
+        id,
+        title:  comic.title,
+        folder: comic.folder,
+        cover:  comic.cover  || "",
+        ext:    comic.ext    || "",
+        type:   comic.type   || "",
+        status: libSel.value,
+        ts:     Date.now(),
+      }).catch(() => {});
+    }
+  };
+
+  loadLibStatus();
+}
+
+async function loadLibStatus() {
+  const libSel = document.getElementById("libSel");
+  if (!user || !libSel) return;
+  const snap = await getDoc(doc(db, "users", user.uid, "library", id)).catch(() => null);
+  if (snap?.exists()) libSel.value = snap.data().status || "";
+}
+
+// ── Bootstrap ─────────────────────────────────────────────
+(async () => {
+  if (!id) {
+    app.innerHTML = `<p class="empty">Comic ID nahi mila. <a class="btn" href="index.html">Home</a></p>`;
+    return;
+  }
+  comic = await getComic(id).catch(() => null);
+  if (!comic) {
+    app.innerHTML = `<p class="empty">Ye comic nahi mili.<br><br><a class="btn" href="index.html">Home pe jao</a></p>`;
+    return;
+  }
+  chs = sortedChapters(comic);
+  draw();
+  watchUser((u) => { user = u; loadLibStatus(); });
+})();
+</script>
+</body>
+</html>

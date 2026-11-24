@@ -1,0 +1,68 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ──────────────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isAdmin() {
+      return isSignedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == 'maxton480@gmail.com';
+    }
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ── Comics ───────────────────────────────────────────
+    // Anyone can read; only verified admin can write
+    match /comics/{id} {
+      allow read: if true;
+
+      allow create: if isAdmin()
+        && request.resource.data.title  is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 200
+        && request.resource.data.folder is string
+        && request.resource.data.folder.size() > 0
+        && request.resource.data.folder.size() <= 100;
+
+      allow update: if isAdmin()
+        && request.resource.data.title  is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.folder is string
+        && request.resource.data.folder == resource.data.folder; // folder cannot change
+
+      allow delete: if isAdmin();
+    }
+
+    // ── User library ─────────────────────────────────────
+    match /users/{uid}/library/{comicId} {
+      allow read, delete: if isOwner(uid);
+
+      allow create, update: if isOwner(uid)
+        && request.resource.data.id     is string
+        && request.resource.data.title  is string
+        && request.resource.data.status is string
+        && request.resource.data.status in [
+             'Reading', 'Plan to read', 'On hold', 'Completed'
+           ];
+    }
+
+    // ── User history ─────────────────────────────────────
+    match /users/{uid}/history/{comicId} {
+      allow read, delete: if isOwner(uid);
+
+      allow create, update: if isOwner(uid)
+        && request.resource.data.id is string
+        && request.resource.data.ch is string
+        && request.resource.data.ts is int;
+    }
+
+    // ── Block everything else ────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

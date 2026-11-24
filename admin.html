@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="robots" content="noindex,nofollow">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Admin — Comicpur</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Hind:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="app"></main>
+<div class="toast" id="toast" role="status"></div>
+
+<script type="module">
+import {
+  watchUser, auth, checkAdmin, sendVerify, refreshUser,
+  ADMIN_EMAIL, login,
+  getComics, clearCache,
+  db, doc, setDoc, deleteDoc, serverTimestamp,
+} from "./firebase.js";
+import { mountChrome, esc, coverImg } from "./nav.js";
+
+mountChrome("");
+
+const app = document.getElementById("app");
+const $   = (id) => document.getElementById(id);
+let comics = [], cur = null, isNew = false, origNs = new Set();
+
+// ── Toast ─────────────────────────────────────────────────
+let toastTimer;
+const toast = (t) => {
+  const el = $("toast");
+  el.textContent = t; el.classList.add("on");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("on"), 4000);
+};
+const errMsg = (e) =>
+  e.code === "permission-denied"
+    ? "Permission nahi mili. Firestore rules check karo aur email verify karo."
+    : "Error: " + e.message;
+
+// ── Helpers ───────────────────────────────────────────────
+const slugify   = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "c" + Date.now();
+const titleize  = (s) => s.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+const numSort   = (a, b) => parseFloat(a.n) - parseFloat(b.n);
+const loadComics = async () => { comics = await getComics(true).catch((e) => { toast(errMsg(e)); return comics; }); };
+
+// ── Gate: only verified admin email ──────────────────────
+async function gate(u) {
+  if (!u) {
+    app.innerHTML = `<p class="empty">Login karo.<br><br><button class="btn solid" id="loginBtn">Login</button></p>`;
+    $("loginBtn").onclick = login;
+    return;
+  }
+  if (await checkAdmin(u)) {
+    await loadComics();
+    showList();
+    return;
+  }
+  if ((u.email || "").toLowerCase() === ADMIN_EMAIL && !u.emailVerified) {
+    app.innerHTML = `
+      <p class="empty">
+        Admin access ke liye email verify karo.<br>
+        Inbox aur spam folder dekho.<br><br>
+        <button class="btn" id="resendBtn">Email dobara bhejo</button>
+        <button class="btn solid" id="doneBtn" style="margin-top:10px">Maine verify kar liya</button>
+        <br><small id="vm"></small>
+      </p>`;
+    $("resendBtn").onclick = async () => {
+      try { await sendVerify(u); $("vm").textContent = "Email bhej diya."; }
+      catch (e) { $("vm").textContent = e.message; }
+    };
+    $("doneBtn").onclick = async () => {
+      try { await refreshUser(); gate(auth.currentUser); }
+      catch (e) { $("vm").textContent = e.message; }
+    };
+    return;
+  }
+  location.replace("index.html");
+}
+watchUser(gate);
+
+// ── Comic list ────────────────────────────────────────────
+function showList() {
+  cur = null;
+  app.innerHTML = `
+    <section class="sec">
+      <div class="sec-head">
+        <h2>Comics (<span id="cnt">${comics.length}</span>)</h2>
+        <button class="btn solid" id="newBtn">+ Nayi comic</button>
+      </div>
+      <input class="input" id="flt" type="search" placeholder="Comic search karo..." style="display:block;margin-bottom:14px">
+      <div class="list" id="comicList" style="grid-template-columns:1fr"></div>
+    </section>
+
+    <details class="box">
+      <summary>GitHub se sync</summary>
+      <p class="sub" style="margin-bottom:12px">
+        Images repo (folder/ch1/001.webp) padhke comics, chapters aur pages automatically set karta hai.
+        Aapka likha title, description waghera nahi badalta.
+      </p>
+      <div class="field">
+        <label>Repo (owner/naam)</label>
+        <input class="input" id="ghRepo" placeholder="maxton480/comics">
+      </div>
+      <div class="field">
+        <label>GitHub PAT token (optional — private repo ya high rate limit ke liye)</label>
+        <input class="input" id="ghToken" type="password" autocomplete="off" placeholder="github_pat_...">
+      </div>
+      <p class="sub" style="margin-bottom:12px">Token sirf is device ke browser mein save hota hai.</p>
+      <div style="display:flex;gap:10px;margin-bottom:10px">
+        <button class="btn grow" id="ghSave">Settings save karo</button>
+        <button class="btn grow" id="ghClear">Token hatao</button>
+      </div>
+      <button class="btn solid" id="syncBtn" style="width:100%">Sync karo</button>
+      <pre id="syncLog" class="sub" style="white-space:pre-wrap;margin-top:12px;font-family:inherit;line-height:1.6"></pre>
+      <div id="syncConfirm" style="display:none;margin-top:12px;display:none;gap:10px">
+        <button class="btn solid" id="syncYes" style="flex:1">✅ Haan, sync karo</button>
+        <button class="btn" id="syncNo"  style="flex:1">❌ Cancel</button>
+      </div>
+    </details>`;
+
+  $("newBtn").onclick  = () => showEditor(null);
+  $("flt").oninput     = drawList;
+  $("syncBtn").onclick = doSync;
+
+  const gh = loadGhSettings();
+  $("ghRepo").value  = gh.repo  || "maxton480/comics";
+  $("ghToken").value = gh.token || "";
+
+  $("ghSave").onclick = () => {
+    saveGhSettings({ repo: $("ghRepo").value.trim(), token: $("ghToken").value.trim() });
+    toast("Settings save ho gayi.");
+  };
+  $("ghClear").onclick = () => {
+    $("ghToken").value = "";
+    saveGhSettings({ repo: $("ghRepo").value.trim(), token: "" });
+    toast("Token hata diya.");
+  };
+
+  drawList();
+}
+
+function drawList() {
+  const q    = ($("flt")?.value || "").trim().toLowerCase();
+  const list = comics.filter((c) => !q || (c.title + " " + c.folder).toLowerCase().includes(q));
+  $("cnt").textContent = comics.length;
+  $("comicList").innerHTML = list.length
+    ? list.map((c) => `
+        <button class="row" data-id="${esc(c.id)}">
+          <div class="cover">${coverImg(c, 160)}</div>
+          <div>
+            <h3>${esc(c.title)}</h3>
+            <p>${(c.chapterList || []).length} chapters · ${esc(c.folder)}</p>
+            <p class="when">${c.description ? esc(c.description.slice(0, 60)) + "..." : "Summary nahi"}</p>
+          </div>
+        </button>`).join("")
+    : `<p class="sub">Koi comic nahi mili. Sync karo ya nayi comic banao.</p>`;
+
+  $("comicList").querySelectorAll("[data-id]").forEach((btn) => {
+    btn.onclick = () => showEditor(btn.dataset.id);
+  });
+}
+
+// ── Comic editor ──────────────────────────────────────────
+function showEditor(id) {
+  isNew = !id;
+  cur   = id
+    ? structuredClone(comics.find((c) => c.id === id))
+    : { title: "", folder: "", type: "Manga", status: "Ongoing", author: "", ext: "webp", cover: "", description: "", genres: [], chapterList: [] };
+  cur.chapterList = [...(cur.chapterList || [])].sort(numSort);
+  origNs = new Set(cur.chapterList.map((x) => x.n));
+
+  const sel = (elId, label, opts, val) =>
+    `<div class="field" style="margin:0">
+       <label>${label}</label>
+       <select class="input" id="${elId}">
+         ${opts.map((o) => `<option${o === val ? " selected" : ""}>${o}</option>`).join("")}
+       </select>
+     </div>`;
+
+  app.innerHTML = `
+    <section class="sec">
+      <button class="btn" id="backBtn">‹ Wapas</button>
+      <h2 style="margin:14px 0 0">${isNew ? "Nayi comic" : esc(cur.title)}</h2>
+    </section>
+
+    <div class="box">
+      <div class="field"><label>Title *</label><input class="input" id="fTitle"></div>
+      <div class="field">
+        <label>Folder naam (GitHub repo mein bilkul wahi) *</label>
+        <input class="input" id="fFolder" placeholder="wild-love" ${isNew ? "" : "readonly"}>
+      </div>
+      <div class="filters" style="margin:0 0 14px">
+        ${sel("fType",   "Type",   ["Manga","Manhwa","Manhua","Webtoon","Comic"], cur.type)}
+        ${sel("fStatus", "Status", ["Ongoing","Completed","Hiatus"],              cur.status)}
+      </div>
+      <div class="filters" style="margin:0 0 14px">
+        <div class="field" style="margin:0"><label>Author</label><input class="input" id="fAuthor"></div>
+        ${sel("fExt", "Format", ["webp","jpg","jpeg","png"], cur.ext)}
+      </div>
+      <div class="field"><label>Cover path (jaise cover.webp ya ch1/001.webp)</label><input class="input" id="fCover" placeholder="khali = ch1/001"></div>
+      <div class="field"><label>Genres (comma se alag)</label><input class="input" id="fGenres" placeholder="Romance, Drama, Action"></div>
+      <div class="field" style="margin:0"><label>Summary / Description</label><textarea class="input" id="fDesc" rows="4"></textarea></div>
+    </div>
+
+    <div class="box">
+      <h2>Chapters (<span id="chCount"></span>)</h2>
+      <div class="chh"><span>Ch.</span><span>Title</span><span>Pages</span><span></span></div>
+      <div id="chList"></div>
+      <button class="btn" id="addChBtn" style="width:100%;margin-top:8px">+ Chapter add karo</button>
+    </div>
+
+    <div class="pad" style="display:grid;gap:10px;margin-bottom:32px">
+      <button class="btn solid" id="saveBtn">Save karo</button>
+      ${!isNew ? `<button class="btn" id="delBtn">Comic delete karo</button>` : ""}
+    </div>`;
+
+  // Fill form values
+  $("fTitle").value  = cur.title  || "";
+  $("fFolder").value = cur.folder || "";
+  $("fAuthor").value = cur.author || "";
+  $("fCover").value  = cur.cover  || "";
+  $("fGenres").value = (cur.genres || []).join(", ");
+  $("fDesc").value   = cur.description || "";
+
+  $("backBtn").onclick  = () => { showList(); };
+  $("saveBtn").onclick  = saveComic;
+  $("addChBtn").onclick = addChapter;
+  if ($("delBtn")) $("delBtn").onclick = deleteComic;
+
+  renderChapters();
+}
+
+function renderChapters() {
+  $("chCount").textContent = cur.chapterList.length;
+  $("chList").innerHTML = cur.chapterList.map((c, i) => `
+    <div class="chr">
+      <input class="input" data-k="n"     data-i="${i}" value="${esc(c.n)}"          inputmode="decimal" aria-label="Ch. number">
+      <input class="input" data-k="title" data-i="${i}" value="${esc(c.title || "")}" placeholder="Title (optional)">
+      <input class="input" data-k="pages" data-i="${i}" value="${c.pages}"            inputmode="numeric" aria-label="Pages">
+      <button class="btn" data-x="${i}" aria-label="Hatao">✕</button>
+    </div>`).join("");
+
+  $("chList").querySelectorAll("input").forEach((inp) => {
+    inp.oninput = () => { cur.chapterList[+inp.dataset.i][inp.dataset.k] = inp.value; };
+  });
+  $("chList").querySelectorAll("[data-x]").forEach((btn) => {
+    btn.onclick = () => {
+      const ch = cur.chapterList[+btn.dataset.x];
+      if (confirm(`Ch. ${ch.n} hatana hai?`)) {
+        cur.chapterList.splice(+btn.dataset.x, 1);
+        renderChapters();
+      }
+    };
+  });
+}
+
+function addChapter() {
+  const last = cur.chapterList[cur.chapterList.length - 1];
+  cur.chapterList.push({
+    n:     last ? String(Math.floor(parseFloat(last.n)) + 1) : "1",
+    title: "",
+    pages: last ? last.pages : 20,
+    at:    Date.now(),
+  });
+  renderChapters();
+  const rows = $("chList").querySelectorAll(".chr");
+  rows[rows.length - 1]?.querySelector("input")?.focus();
+}
+
+async function saveComic() {
+  const title  = $("fTitle").value.trim();
+  const folder = $("fFolder").value.trim();
+  if (!title || !folder) { toast("Title aur folder dono zaroori hain."); return; }
+
+  const list = cur.chapterList.map((c) => ({
+    n:     String(c.n).trim(),
+    title: (c.title || "").trim(),
+    pages: parseInt(c.pages, 10) || 0,
+    at:    c.at || Date.now(),
+  }));
+
+  if (list.some((c) => !/^\d+(\.\d+)?$/.test(c.n) || c.pages < 1)) {
+    toast("Har chapter ka number (1 ya 1.5) aur pages (1 se zyada) sahi daalo.");
+    return;
+  }
+  if (new Set(list.map((c) => c.n)).size !== list.length) {
+    toast("Ek chapter number do baar hai.");
+    return;
+  }
+  list.sort(numSort);
+
+  const docId = isNew ? slugify(folder) : cur.id;
+  if (isNew && comics.some((c) => c.id === docId)) {
+    toast("Is folder ki comic pehle se hai.");
+    return;
+  }
+
+  const data = {
+    title,
+    folder,
+    type:          $("fType").value,
+    status:        $("fStatus").value,
+    author:        $("fAuthor").value.trim(),
+    ext:           $("fExt").value,
+    cover:         $("fCover").value.trim(),
+    description:   $("fDesc").value.trim(),
+    genres:        $("fGenres").value.split(",").map((s) => s.trim()).filter(Boolean),
+    chapterList:   list,
+    latestChapter: list.length ? list[list.length - 1].n : "",
+  };
+  if (isNew) {
+    data.createdAt = serverTimestamp();
+    data.updatedAt = serverTimestamp();
+  } else if (list.some((c) => !origNs.has(c.n))) {
+    data.updatedAt = serverTimestamp();
+  }
+
+  $("saveBtn").disabled = true;
+  try {
+    await setDoc(doc(db, "comics", docId), data, { merge: true });
+    clearCache();
+    toast("Save ho gaya! ✓");
+    await loadComics();
+    showList();
+  } catch (e) {
+    toast(errMsg(e));
+    $("saveBtn").disabled = false;
+  }
+}
+
+async function deleteComic() {
+  if (!confirm(`"${cur.title}" delete karni hai? Images repo se nahi hategi.`)) return;
+  try {
+    await deleteDoc(doc(db, "comics", cur.id));
+    clearCache();
+    toast("Delete ho gayi.");
+    await loadComics();
+    showList();
+  } catch (e) { toast(errMsg(e)); }
+}
+
+// ── GitHub Settings ───────────────────────────────────────
+const GH_KEY = "cp_gh_v2";
+const loadGhSettings = () => { try { return JSON.parse(localStorage.getItem(GH_KEY) || "{}"); } catch { return {}; } };
+const saveGhSettings = (v) => { try { localStorage.setItem(GH_KEY, JSON.stringify(v)); } catch {} };
+
+// ── GitHub API ────────────────────────────────────────────
+async function ghFetch(path, token) {
+  const headers = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
+  if (token) headers.Authorization = "Bearer " + token;
+  let r;
+  try {
+    r = await fetch("https://api.github.com" + path, { headers });
+  } catch (netErr) {
+    throw new Error("Network error — internet check karo. (" + netErr.message + ")");
+  }
+  if (!r.ok) {
+    let body = "";
+    try { body = (await r.json()).message || ""; } catch {}
+    const remaining = r.headers.get("x-ratelimit-remaining") || "?";
+    const resetAt   = r.headers.get("x-ratelimit-reset");
+    const resetTime = resetAt ? new Date(+resetAt * 1000).toLocaleTimeString() : "?";
+    throw new Error(
+      r.status === 404 ? "Repo nahi mila (404). Private repo hai to PAT token daalo." :
+      r.status === 401 ? "Token galat ya expire ho gaya (401)." :
+      r.status === 403 ? `Rate limit ya forbidden (403) — remaining: ${remaining}, reset: ${resetTime}. PAT token daalo.` :
+      r.status === 500 ? `GitHub server error (500) — thodi der baad try karo. ${body}` :
+      r.status === 422 ? `Repo bahut bada hai — recursive tree nahi mili (422). ${body}` :
+      `GitHub error ${r.status}: ${body}`
+    );
+  }
+  return r.json();
+}
+
+// ── GitHub Sync ───────────────────────────────────────────
+async function doSync() {
+  const logEl = $("syncLog");
+  logEl.textContent = "";
+  const log = (t) => { logEl.textContent += t + "\n"; };
+
+  $("syncBtn").disabled = true;
+  try {
+    const repo  = $("ghRepo").value.trim()  || "maxton480/comics";
+    const token = $("ghToken").value.trim() || "";
+
+    log("Repo info padh raha hoon: " + repo);
+    const info = await ghFetch(`/repos/${repo}`, token);
+    const branch = info.default_branch;
+    log("Branch: " + branch);
+
+    log("File tree padh raha hoon (isme thodi der lag sakti hai)...");
+    const tree = await ghFetch(`/repos/${repo}/git/trees/${branch}?recursive=1`, token);
+    if (tree.truncated) log("⚠️  Repo bahut bada hai — kuch files list mein nahi aayi. Sirf pehli batch sync hogi.");
+    log(`Tree mein ${tree.tree?.length || 0} items mili.`);
+
+    // ── Parse tree ──────────────────────────────────────
+    // Pattern: folder/chN/PAGE.ext  (chapter images)
+    // Pattern: folder/anything.ext  (other images like cover)
+    const reCh  = /^([^/]+)\/ch(\d+(?:\.\d+)?)\/(\d+)\.(webp|jpe?g|png)$/i;
+    const reImg = /^([^/]+)\/(.+\.(?:webp|jpe?g|png))$/i;
+
+    const found = {}; // folder → { chs, ext, pad, padded, exts }
+    const imgs  = {}; // folder → [relative paths]
+
+    for (const item of tree.tree) {
+      if (item.type !== "blob") continue;
+
+      let m = reCh.exec(item.path);
+      if (m) {
+        const [, folder, chN, pageNum, ext] = m;
+        const o = found[folder] || (found[folder] = { ext: ext.toLowerCase(), exts: new Set(), chs: {}, padded: false, pad: 1 });
+        o.exts.add(ext.toLowerCase());
+        o.chs[chN] = Math.max(o.chs[chN] || 0, parseInt(pageNum, 10));
+        if (pageNum.length > 1 && pageNum.startsWith("0")) o.padded = true;
+        o.pad = Math.max(o.pad, pageNum.length);
+        continue;
+      }
+
+      m = reImg.exec(item.path);
+      if (m) {
+        const [, folder, rel] = m;
+        (imgs[folder] = imgs[folder] || []).push(rel);
+      }
+    }
+
+    const folders = Object.keys(found);
+    if (!folders.length) {
+      log("❌ Koi comic folder nahi mila.");
+      log("Repo structure honi chahiye: folder/ch1/001.webp");
+      log("Pehle kuch paths: " + tree.tree.slice(0, 6).map((t) => t.path).join(", "));
+      return;
+    }
+
+    // ── Pick cover image ─────────────────────────────────
+    const pickCover = (folderImgs) => {
+      if (!folderImgs?.length) return "";
+      const named = folderImgs.filter((p) => /(cover|thumb|poster)/i.test(p.split("/").pop()));
+      const pool  = named.length ? named : folderImgs.filter((p) => !p.includes("/"));
+      return pool.sort((a, b) => a.localeCompare(b))[0] || "";
+    };
+
+    // ── Build sync plan ──────────────────────────────────
+    await loadComics();
+    const plan = [];
+
+    for (const folder of folders) {
+      const o      = found[folder];
+      const pad    = o.pad; // always use detected pad (not hardcode 1)
+      const c      = comics.find((x) => x.folder === folder);
+      const chKeys = Object.keys(o.chs).sort((a, b) => parseFloat(a) - parseFloat(b));
+      const firstCh = chKeys[0];
+      const coverFound = pickCover(imgs[folder]);
+      const cover  = coverFound || (!c?.cover ? `ch${firstCh}/${String(1).padStart(pad, "0")}.${o.ext}` : "");
+
+      if (o.exts.size > 1) log(`⚠️  ${folder}: alag formats (${[...o.exts].join(", ")}). Ek hi rakho.`);
+
+      const list    = c ? [...(c.chapterList || [])].sort(numSort).map((x) => ({ ...x })) : [];
+      let added = 0, changed = 0;
+
+      for (const [chN, pages] of Object.entries(o.chs)) {
+        const existing = list.find((x) => x.n === chN);
+        if (!existing) { list.push({ n: chN, title: "", pages, at: Date.now() }); added++; }
+        else if (existing.pages !== pages) { existing.pages = pages; changed++; }
+      }
+
+      const coverChanged = !!cover && (!c || c.cover !== cover);
+      const fmtChanged   = !!c && (c.ext !== o.ext || (c.pad || 3) !== pad);
+
+      if (!c || added || changed || coverChanged || fmtChanged) {
+        plan.push({ folder, c, list, ext: o.ext, pad, cover, coverFound, added, changed });
+      }
+    }
+
+    if (!plan.length) { log("✅ Sab kuch pehle se sync hai."); return; }
+
+    // Show plan in log
+    log("\n── Plan ──");
+    plan.forEach((p) => {
+      log(`${p.c ? "UPDATE" : "NAYI  "} ${p.folder}: +${p.added} ch${p.changed ? `, ${p.changed} pages update` : ""}, cover: ${p.coverFound || "first page"}`);
+    });
+    log("──────────");
+    log(`\nTotal: ${plan.length} comic(s). Sync karna hai?`);
+
+    // Custom confirm UI (Android WebView mein native confirm() blocked hota hai)
+    const confirmed = await new Promise((resolve) => {
+      const box = $("syncConfirm");
+      box.style.display = "flex";
+      const cleanup = () => { box.style.display = "none"; };
+      $("syncYes").onclick = () => { cleanup(); resolve(true); };
+      $("syncNo").onclick  = () => { cleanup(); resolve(false); };
+    });
+
+    if (!confirmed) {
+      log("Cancel kiya.");
+      return;
+    }
+
+    // ── Apply changes ────────────────────────────────────
+    for (const p of plan) {
+      p.list.sort(numSort);
+      const data = {
+        chapterList:   p.list,
+        latestChapter: p.list[p.list.length - 1].n,
+        ext:           p.ext,
+        pad:           p.pad,
+      };
+      if (p.cover)        data.cover     = p.cover;
+      if (!p.c || p.added) data.updatedAt = serverTimestamp();
+      if (!p.c) {
+        Object.assign(data, {
+          title:       titleize(p.folder),
+          folder:      p.folder,
+          type:        "Comic",
+          status:      "Ongoing",
+          author:      "",
+          description: "",
+          genres:      [],
+          createdAt:   serverTimestamp(),
+        });
+      }
+      await setDoc(doc(db, "comics", p.c ? p.c.id : slugify(p.folder)), data, { merge: true });
+      log("✓ " + p.folder);
+    }
+
+    clearCache();
+    await loadComics();
+    drawList();
+    log("\n✅ Sync complete!");
+    toast("Sync complete! ✓");
+  } catch (e) {
+    log("❌ " + errMsg(e));
+    toast(errMsg(e));
+  } finally {
+    $("syncBtn").disabled = false;
+  }
+}
+</script>
+</body>
+</html>

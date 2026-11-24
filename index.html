@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Comicpur</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Hind:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="app"></main>
+
+<script type="module">
+import { getComics } from "./firebase.js";
+import { mountChrome, esc, timeAgo, coverImg, rowHTML } from "./nav.js";
+
+mountChrome("home");
+
+const app  = document.getElementById("app");
+const link = (c) => `comic.html?id=${encodeURIComponent(c.id)}`;
+
+const sec = (title, body, more = "") => `
+  <section class="sec">
+    <div class="sec-head"><h2>${title}</h2>${more}</div>
+    ${body}
+  </section>`;
+
+const railCard = (c, sub = "") => `
+  <a class="rcard" href="${link(c)}">
+    <div class="cover">
+      ${coverImg(c, 260)}
+      ${c.type ? `<span class="tag">${esc(c.type)}</span>` : ""}
+      <div class="shade"><b>${esc(c.title)}</b></div>
+    </div>
+    ${sub}
+  </a>`;
+
+// Skeleton while loading
+app.innerHTML = sec("Abhi update hui", `
+  <div class="list">
+    ${Array(4).fill(`<div class="row skel"><div class="cover"></div><div></div></div>`).join("")}
+  </div>`);
+
+getComics()
+  .then((comics) => {
+    if (!comics.length) {
+      app.innerHTML = `<p class="empty">Abhi koi comic nahi hai.</p>`;
+      return;
+    }
+
+    const top = comics[0];
+
+    // Hero — single most-recently-updated comic
+    let html = `
+      <section class="hero-home">
+        <div class="bg">${coverImg(top, 400)}</div>
+        <div class="in">
+          <a class="cover" href="${link(top)}">${coverImg(top, 520)}</a>
+          <div>
+            <span class="tag solid">Naya update</span>
+            <h1>${esc(top.title)}</h1>
+            <p class="sub">
+              ${esc([top.type, top.status].filter(Boolean).join(" · "))}
+              ${top.latestChapter ? " · Ch. " + esc(top.latestChapter) : ""}
+            </p>
+            <a class="btn solid" href="${link(top)}" style="margin-top:14px">Padhna shuru karo</a>
+          </div>
+        </div>
+      </section>`;
+
+    // Continue reading (from localStorage history)
+    let hist = [];
+    try { hist = JSON.parse(localStorage.getItem("cp_history") || "[]").slice(0, 10); } catch {}
+    const histItems = hist
+      .map((h) => ({ h, c: comics.find((x) => x.id === h.id) }))
+      .filter((x) => x.c);
+    if (histItems.length) {
+      html += sec(
+        "Padhna jaari rakho",
+        `<div class="rail">${histItems.map(({ h, c }) =>
+          railCard(c, `<p class="sub">Ch. ${esc(h.ch || "?")}</p>`)
+        ).join("")}</div>`,
+        `<a href="profile.html?tab=history">Sab dekho</a>`
+      );
+    }
+
+    // Newly added
+    const newest = [...comics]
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .slice(0, 12);
+    html += sec(
+      "Nayi add hui",
+      `<div class="rail">${newest.map((c) => railCard(c)).join("")}</div>`,
+      `<a href="search.html">Sab dekho</a>`
+    );
+
+    // Recently updated list
+    html += sec(
+      "Abhi update hui",
+      `<div class="list">${comics.slice(0, 20).map(rowHTML).join("")}</div>`
+    );
+
+    app.innerHTML = html;
+  })
+  .catch((e) => {
+    app.innerHTML = `
+      <p class="empty">
+        Comics load nahi hui. Internet check karo aur dobara try karo.
+        <br><small>${esc(e.message)}</small>
+      </p>`;
+  });
+</script>
+</body>
+</html>

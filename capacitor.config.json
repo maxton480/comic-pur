@@ -1,0 +1,21 @@
+{
+  "appId": "com.maxton480.comicpur",
+  "appName": "Comicpur",
+  "webDir": ".",
+  "server": {
+    "url": "https://maxton480.github.io/comic-pur/index.html",
+    "cleartext": false,
+    "allowNavigation": [
+      "maxton480.github.io",
+      "wsrv.nl",
+      "raw.githubusercontent.com",
+      "comicpur-e6725.firebaseapp.com",
+      "*.googleapis.com",
+      "*.gstatic.com"
+    ]
+  },
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#000000"
+  }
+}

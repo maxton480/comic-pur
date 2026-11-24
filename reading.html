@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Reading — Comicpur</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Hind:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="reader">
+
+<div class="prog" id="prog"></div>
+<div class="pc"   id="pc"></div>
+
+<header class="rbar top" id="topBar">
+  <a class="round" id="backBtn" href="index.html" aria-label="Wapas">‹</a>
+  <div class="rt">
+    <b id="titleEl">...</b>
+    <small id="chnEl"></small>
+  </div>
+</header>
+
+<main id="pages"></main>
+
+<footer class="rbar bot" id="botBar">
+  <button class="btn" id="prevBtn" aria-label="Pichla" style="padding:0 14px">‹</button>
+  <select class="input" id="chSel" style="flex:1" aria-label="Chapter"></select>
+  <button class="btn" id="hdBtn"  aria-label="Quality"></button>
+  <button class="btn" id="nextBtn" aria-label="Agla"  style="padding:0 14px">›</button>
+</footer>
+
+<script type="module">
+import { getComic, sortedChapters, pageUrl, thumb, saveProgress, watchUser } from "./firebase.js";
+import { esc } from "./nav.js";
+
+const params = new URLSearchParams(location.search);
+const id     = params.get("id");
+const ch     = params.get("ch");
+const pages  = document.getElementById("pages");
+
+// Load comic data
+const comic = id ? await getComic(id).catch(() => null) : null;
+const chs   = comic ? sortedChapters(comic) : [];
+let   idx   = chs.findIndex((c) => c.n === ch);
+if (idx < 0) idx = 0;
+const cur   = chs[idx];
+
+if (!comic || !cur) {
+  pages.innerHTML = `
+    <p class="empty">
+      Chapter nahi mila.<br><br>
+      <a class="btn" href="index.html">Home</a>
+    </p>`;
+} else {
+  // Set titles
+  document.title = `${comic.title} Ch. ${cur.n}`;
+  document.getElementById("titleEl").textContent = comic.title;
+  document.getElementById("chnEl").textContent   = "Ch. " + cur.n + (cur.title ? " — " + cur.title : "");
+  document.getElementById("backBtn").href        = `comic.html?id=${encodeURIComponent(id)}`;
+
+  // Chapter navigation
+  const prevBtn = document.getElementById("prevBtn");
+  const nextBtn = document.getElementById("nextBtn");
+  const chSel   = document.getElementById("chSel");
+
+  chSel.innerHTML = chs.map((c) =>
+    `<option value="${esc(c.n)}" ${c.n === cur.n ? "selected" : ""}>Ch. ${esc(c.n)}${c.title ? " — " + esc(c.title) : ""}</option>`
+  ).join("");
+
+  const go = (c) => location.replace(`reading.html?id=${encodeURIComponent(id)}&ch=${encodeURIComponent(c.n)}`);
+
+  prevBtn.disabled = idx === 0;
+  nextBtn.disabled = idx === chs.length - 1;
+  prevBtn.onclick  = () => go(chs[idx - 1]);
+  nextBtn.onclick  = () => go(chs[idx + 1]);
+  chSel.onchange   = () => { const c = chs.find((c) => c.n === chSel.value); if (c) go(c); };
+
+  // Quality toggle
+  const isHD   = localStorage.getItem("cp_hd") === "1";
+  const hdBtn  = document.getElementById("hdBtn");
+  hdBtn.textContent = isHD ? "HD" : "Lite";
+  hdBtn.onclick = () => {
+    localStorage.setItem("cp_hd", isHD ? "0" : "1");
+    location.reload();
+  };
+
+  // Build page images
+  let html = "";
+  for (let n = 1; n <= cur.pages; n++) {
+    const raw = pageUrl(comic, cur.n, n);
+    const src = isHD ? raw : thumb(raw, 1000, 72);
+    html += `<img src="${src}" data-raw="${raw}" data-p="${n}" alt="Page ${n}" decoding="async"${n > 2 ? ' loading="lazy"' : ""}>`;
+  }
+  // End card
+  html += `
+    <div class="end">
+      <p class="sub">Ch. ${esc(cur.n)} khatam 🎉</p>
+      ${chs[idx + 1]
+        ? `<a class="btn solid nxt" href="reading.html?id=${encodeURIComponent(id)}&ch=${encodeURIComponent(chs[idx + 1].n)}">
+             Agla chapter · Ch. ${esc(chs[idx + 1].n)} →
+           </a>`
+        : `<a class="btn" href="comic.html?id=${encodeURIComponent(id)}">Comic page pe jao</a>`}
+    </div>`;
+  pages.innerHTML = html;
+
+  // Image error fallback
+  pages.addEventListener("error", (e) => {
+    const img = e.target;
+    if (img.tagName !== "IMG") return;
+    if (img.dataset.raw && img.src !== img.dataset.raw) {
+      img.src = img.dataset.raw; // try original
+      return;
+    }
+    img.outerHTML = `
+      <div class="imgerr">
+        Page ${img.dataset.p} load nahi hua
+        <small>${esc(img.src)}</small>
+        <button class="btn" onclick="location.reload()">Dobara try karo</button>
+      </div>`;
+  }, true);
+
+  // ── Progress bar ──────────────────────────────────────
+  const prog = document.getElementById("prog");
+  window.addEventListener("scroll", () => {
+    const total = document.documentElement.scrollHeight - innerHeight;
+    prog.style.width = (total > 0 ? scrollY / total * 100 : 0) + "%";
+  }, { passive: true });
+
+  // ── Page counter (fixed — works for tall pages) ───────
+  const pc         = document.getElementById("pc");
+  const totalPages = cur.pages;
+  const imgEls     = [...pages.querySelectorAll("img[data-p]")];
+
+  pc.textContent = `1 / ${totalPages}`;
+
+  function updateCounter() {
+    // Find topmost image whose bottom edge is below the fold (i.e., still in/above view)
+    let current = imgEls[0];
+    for (const img of imgEls) {
+      const rect = img.getBoundingClientRect();
+      // Once we pass top of screen, track it as current
+      if (rect.top <= innerHeight * 0.5) current = img;
+      else break;
+    }
+    if (current?.dataset.p) {
+      pc.textContent = `${current.dataset.p} / ${totalPages}`;
+    }
+  }
+
+  window.addEventListener("scroll", updateCounter, { passive: true });
+  updateCounter();
+
+  // ── Tap to toggle bars ────────────────────────────────
+  const topBar = document.getElementById("topBar");
+  const botBar = document.getElementById("botBar");
+  pages.addEventListener("click", (e) => {
+    const a = e.target.closest("a");
+    if (a) {
+      if (a.classList.contains("nxt")) {
+        e.preventDefault();
+        location.replace(a.href);
+      }
+      return;
+    }
+    topBar.classList.toggle("off");
+    botBar.classList.toggle("off");
+  });
+
+  // ── Save progress ─────────────────────────────────────
+  let saved = false;
+  watchUser((u) => {
+    if (!saved) { saved = true; saveProgress(u, comic, cur.n); }
+  });
+}
+</script>
+</body>
+</html>

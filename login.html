@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Login — Comicpur</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Hind:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body style="padding-bottom:32px">
+<div class="login-wrap">
+  <a href="index.html" class="login-logo">Comicpur</a>
+
+  <div class="chips" style="padding-left:0;padding-right:0">
+    <button class="chip on" data-m="in">Login</button>
+    <button class="chip" data-m="up">Naya account</button>
+  </div>
+
+  <div class="field" id="nameField" hidden>
+    <label for="name">Naam</label>
+    <input class="input" id="name" autocomplete="name" placeholder="Apna naam likho">
+  </div>
+  <div class="field">
+    <label for="email">Email</label>
+    <input class="input" id="email" type="email" inputmode="email" autocomplete="email" placeholder="email@example.com">
+  </div>
+  <div class="field">
+    <label for="pw">Password (6+ characters)</label>
+    <input class="input" id="pw" type="password" autocomplete="current-password">
+  </div>
+
+  <button class="btn solid" id="goBtn" style="width:100%;margin-top:4px">Login</button>
+  <p id="msg" role="status" style="margin-top:12px;min-height:20px;font-size:14px"></p>
+  <button class="link" id="forgotBtn" style="margin-left:0;margin-top:4px">Password bhool gaye?</button>
+</div>
+
+<script type="module">
+import { emailLogin, emailSignup, resetPassword, watchUser } from "./firebase.js";
+
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const rawNext = params.get("next") || "index.html";
+// Whitelist: only allow relative page redirects
+const next = /^[\w\-.]+(\?[\w\-.=&%]*)?$/.test(rawNext) ? rawNext : "index.html";
+
+let mode = "in";
+
+watchUser((u) => { if (u) location.replace(next); });
+
+// Tab switch
+document.querySelectorAll("[data-m]").forEach((btn) => {
+  btn.onclick = () => {
+    mode = btn.dataset.m;
+    document.querySelectorAll("[data-m]").forEach((b) => b.classList.toggle("on", b === btn));
+    $("nameField").hidden = mode === "in";
+    $("goBtn").textContent = mode === "in" ? "Login" : "Account banao";
+    $("pw").autocomplete   = mode === "in" ? "current-password" : "new-password";
+    $("msg").textContent   = "";
+  };
+});
+
+const ERRORS = {
+  "auth/invalid-credential":    "Email ya password galat hai.",
+  "auth/wrong-password":        "Email ya password galat hai.",
+  "auth/user-not-found":        "Is email se koi account nahi. 'Naya account' try karo.",
+  "auth/email-already-in-use":  "Is email se account pehle se hai. Login karo.",
+  "auth/weak-password":         "Password kam se kam 6 characters ka hona chahiye.",
+  "auth/invalid-email":         "Email sahi format mein likho.",
+  "auth/too-many-requests":     "Bahut zyada try ho gaye. Thodi der baad try karo.",
+  "auth/operation-not-allowed": "Firebase mein Email/Password sign-in enable nahi hai.",
+};
+
+const setMsg = (text, busy = false) => {
+  $("msg").textContent   = text;
+  $("goBtn").disabled    = busy;
+  $("goBtn").textContent = busy ? "Ruko..." : (mode === "in" ? "Login" : "Account banao");
+};
+
+async function submit() {
+  const email = $("email").value.trim();
+  const pw    = $("pw").value;
+  if (!email || !pw) { setMsg("Email aur password dono zaroori hain."); return; }
+  setMsg("", true);
+  try {
+    if (mode === "in") await emailLogin(email, pw);
+    else               await emailSignup(email, pw, $("name").value.trim());
+    location.replace(next);
+  } catch (e) {
+    setMsg(ERRORS[e.code] || e.message);
+    $("goBtn").disabled = false;
+    $("goBtn").textContent = mode === "in" ? "Login" : "Account banao";
+  }
+}
+
+$("goBtn").onclick = submit;
+["email", "pw", "name"].forEach((k) =>
+  $(k).addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); })
+);
+
+$("forgotBtn").onclick = async () => {
+  const email = $("email").value.trim();
+  if (!email) { setMsg("Pehle email likho."); return; }
+  try {
+    await resetPassword(email);
+    setMsg("Reset link email pe bhej diya. Spam bhi dekho.");
+  } catch (e) {
+    setMsg(ERRORS[e.code] || e.message);
+  }
+};
+</script>
+</body>
+</html>
